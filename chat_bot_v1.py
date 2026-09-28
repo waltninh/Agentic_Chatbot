@@ -4,14 +4,14 @@ from langchain_core.messages import BaseMessage, HumanMessage
 from langgraph.graph.message import add_messages
 from langchain_openrouter import ChatOpenRouter
 from dotenv import load_dotenv
-from langgraph.checkpoint.memory import MemorySaver
+import sqlite3 # mở kết nối tới database đọc ghi dữ liệu bằng SQL 
+from langgraph.checkpoint.sqlite import SqliteSaver # biến checkpoint thành data để lưu vào SQLite và đọc ngược lại 
 
 load_dotenv()
 
 llm = ChatOpenRouter(
     model = "deepseek/deepseek-v4.1-flash",
-    temperature = 0.7,
-    max_tokens = 10000
+    temperature = 0.7
 )
 
 class ChatState(TypedDict):
@@ -23,7 +23,10 @@ def chat_node(state: ChatState) -> dict:
     return {"messages": [response]}
 
 
-checkpointer = MemorySaver()
+conn = sqlite3.connect(database='chatbot.db',
+                       check_same_thread=False)
+checkpointer = SqliteSaver(conn=conn)
+
 
 graph = StateGraph(ChatState)
 graph.add_node("chat_node", chat_node)
