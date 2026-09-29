@@ -19,22 +19,33 @@ config = {"configurable": {"thread_id": st.session_state.thread_id}}
 
 st.title("Agentic chatbot")
 
-# hien lai lich su da luu trong checkpointer (MemorySaver)
-for message in chatbot.get_state(config).values.get("messages", []):
-    role = "user" if message.type == "human" else "assistant"
-    with st.chat_message(role):
-        st.markdown(message.content)
+def show_tool_call(name, args, result):
+    # 1 buoc "da dung tool" co the bam vao de xem dau vao / ket qua
+    with st.status(f"Đã dùng tool **{name}**", type="step", state="complete"):
+        st.markdown("**Đầu vào**")
+        st.json(args)
+        st.markdown("**Kết quả**")
+        st.code(str(result)[:2000])
 
 
-def stream_reply(user_input):
-    # tra ve tung doan chu cua AI de hien dan ra nhu ChatGPT
-    for chunk, _ in chatbot.stream(
-        {"messages": [HumanMessage(content=user_input)]},
-        config=config,
-        stream_mode="messages",
-    ):
-        if isinstance(chunk, AIMessageChunk) and chunk.content:
-            yield chunk.content
+# hien lai lich su da luu trong checkpointer (SqliteSaver)
+history = chatbot.get_state(config).values.get("messages", [])
+tool_results = {m.tool_call_id: m.content for m in history if m.type == "tool"}
+bubble = None
+for message in history:
+    if message.type == "human":
+        bubble = None
+        with st.chat_message("user"):
+            st.markdown(message.content)
+    elif message.type == "ai":
+        # gom cac buoc tool + cau tra loi vao chung 1 khung assistant
+        if bubble is None:
+            bubble = st.chat_message("assistant")
+        with bubble:
+            for call in message.tool_calls:
+                show_tool_call(call["name"], call["args"], tool_results.get(call["id"], ""))
+            if message.content:
+                st.markdown(message.content)
 
 
 if user_input := st.chat_input("Nhập tin nhắn...", submit_mode="disable"):
@@ -42,9 +53,42 @@ if user_input := st.chat_input("Nhập tin nhắn...", submit_mode="disable"):
     with st.chat_message("user"):
         st.markdown(user_input)
 
-    # goi chatbot va hien cau tra loi
+    # goi chatbot: "messages" de hien tung chu, "updates" de biet AI goi tool nao
     with st.chat_message("assistant"):
-        st.write_stream(stream_reply(user_input))
+        text, text_box, running = "", None, {}
+        for mode, data in chatbot.stream(
+            {"messages": [HumanMessage(content=user_input)]},
+            config=config,
+            stream_mode=["messages", "updates"],
+        ):
+            if mode == "messages":
+                chunk, _ = data
+                if isinstance(chunk, AIMessageChunk) and chunk.content:
+                    if text_box is None:
+                        text_box = st.empty()
+                    text += chunk.content
+                    text_box.markdown(text)
+                continue
+
+            for node, update in data.items():
+                for m in (update or {}).get("messages", []):
+                    if m.type == "ai" and m.tool_calls:
+                        # AI vua yeu cau goi tool -> hien "dang dung tool"
+                        for call in m.tool_calls:
+                            running[call["id"]] = st.status(
+                                f":shimmer[Đang dùng tool **{call['name']}**]", type="step"
+                            )
+                            with running[call["id"]]:
+                                st.markdown("**Đầu vào**")
+                                st.json(call["args"])
+                        text, text_box = "", None
+                    elif m.type == "tool":
+                        # tool chay xong -> them ket qua, doi sang "da dung"
+                        status = running.pop(m.tool_call_id)
+                        with status:
+                            st.markdown("**Kết quả**")
+                            st.code(str(m.content)[:2000])
+                        status.update(label=f"Đã dùng tool **{m.name}**", state="complete")
 
 
 def list_threads():
